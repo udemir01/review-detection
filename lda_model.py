@@ -7,7 +7,7 @@ from collections import Counter
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
-from gensim import corpora
+from numba_progress import ProgressBar
 
 translator = str.maketrans("", "", string.punctuation)
 stop_words = stopwords.words("english")
@@ -21,7 +21,6 @@ def file_read(filename):
 
 def pre_process(data):
     word_freq = Counter()
-    vocabulary, vocabulary_id2word = {}, {}
     corpus = []
 
     for i, sentence in enumerate(data):
@@ -29,25 +28,41 @@ def pre_process(data):
         sentence = re.sub(r"\d+", "", sentence) # NUMBERS
         sentence = sentence.translate(translator) # PUNCTUATION
         sentence = " ".join(sentence.split()) # WHITESPACE
-        sentence = [lemmatizer.lemmatize(word) for word in word_tokenize(sentence) if word not in stop_words] # STOPWORDS, LEMMATIZATION
+        sentence = [lemmatizer.lemmatize(word) for word in word_tokenize(sentence) if word not in stop_words] # LEMMATIZATION, STOPWORDS
         data[i] = sentence
 
         for word in sentence: # WORD FREQUENCY
             word_freq[word] += 1
 
-        for j, word in enumerate(word_freq): # VOCABULARY
+
+
+    return data, word_freq
+
+def generate_vocab(word_freq):
+    vocabulary, vocabulary_id2word = {}, {}
+
+    for j, word in enumerate(word_freq):
+        if word_freq[word] >= 3:
             vocabulary[word] = j
             vocabulary_id2word[j] = word
 
-        corpus_d = [] # CORPUS
-        for token in sentence:
-            corpus_d.append(vocabulary[token])
+    return vocabulary, vocabulary_id2word
+
+def generate_corpus(data, vocabulary):
+    corpus = []
+
+    for sentence in data:
+        document = [word for word in sentence if word in vocabulary]
+        corpus_d = []
+
+        for word in document:
+            corpus_d.append(vocabulary[word])
         corpus.append(np.asarray(corpus_d))
 
-    return data, corpus, word_freq, vocabulary, vocabulary_id2word
+    return corpus
 
-@nb.njit
-def gibbs_sampling(corpus, num_iter=200):
+@nb.njit(nogil=True)
+def gibbs_sampling(corpus, progress, num_iter=200):
     topic_assignment = []
     for doc in corpus:
         topic_assignment.append(np.random.randint(low=0, high=NUMBER_OF_TOPICS, size=len(doc)))
@@ -88,25 +103,28 @@ def gibbs_sampling(corpus, num_iter=200):
                 topic_dist_over_doc[d, new_topic] += 1
                 word_dist_over_topic[new_topic, word] += 1
                 topic_word_count[new_topic] += 1
+        progress.update(1)
 
     return topic_assignment, topic_dist_over_doc, word_dist_over_topic, topic_word_count
 
 data = file_read(sys.argv[1])
-data, corpus, word_freq, vocabulary, vocabulary_id2word = pre_process(data)
+data, word_freq = pre_process(data)
+vocabulary, vocabulary_id2word = generate_vocab(word_freq)
+corpus = generate_corpus(data, vocabulary)
 
 NUMBER_OF_DOCUMENTS = len(corpus)
 VOCAB_SIZE = len(vocabulary)
-NUMBER_OF_TOPICS = 15
-ALPHA = 0.1
-BETA = 0.1
+NUMBER_OF_TOPICS = 20
+NUMBER_OF_ITER = 200
+ALPHA = 1 / NUMBER_OF_TOPICS
+BETA = 1 / NUMBER_OF_TOPICS
 
-z_assignment, theta, nkw, nk = gibbs_sampling(corpus)
+with ProgressBar(total=NUMBER_OF_ITER) as progress:
+    z_assignment, ndk, nkw, nk = gibbs_sampling(corpus, progress, NUMBER_OF_ITER)
 
-phi = nkw / nk.reshape(NUMBER_OF_TOPICS, 1)
-num_words = 10
-for k in range(NUMBER_OF_TOPICS):
-    most_common_words = np.argsort(phi[k])[::-1][:num_words]
-    print(f"Topic {k} most common words: ")
-    for word in most_common_words:
-        print(vocabulary_id2word[word])
-    print("\n")
+inv_vocabulary = {v: k for k, v in vocabulary.items()}
+n_top_words = 10
+for topic_idx, topic in enumerate(nkw):
+    message = "Topic #%d: " % topic_idx
+    message += " ".join([inv_vocabulary[i] for i in topic.argsort()[:-n_top_words - 1:-1]])
+    print(message)
