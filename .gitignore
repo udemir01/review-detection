@@ -1,1 +1,4 @@
 .venv/
+.env/
+dataset/Hotel_Reviews.csv
+*.json
