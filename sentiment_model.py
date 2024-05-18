@@ -72,7 +72,7 @@ def main(sample_size=0.1):
     features = [c for c in data.columns if c not in ignore_cols]
     x, y = SMOTE(sampling_strategy="minority", n_jobs=-1).fit_resample(data[features], data[label])
     joblib.dump(x, "models/sentiment_features.sav")
-    joblib.dump(x, "models/sentiment_labels.sav")
+    joblib.dump(y, "models/sentiment_labels.sav")
     print("Saved Features and Labels for Accuracy Testing.")
     clf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
     clf.fit(x, y)
