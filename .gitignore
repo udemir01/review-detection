@@ -1,4 +1,8 @@
 .venv/
 .env/
+
+models/
 dataset/Hotel_Reviews.csv
-*.json
+
+package-lock.json
+package.json

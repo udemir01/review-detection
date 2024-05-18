@@ -1,14 +1,19 @@
-import pandas as pd
+import os
+import joblib
 import spacy
+import pandas as pd
 from tqdm.auto import tqdm
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from imblearn.over_sampling import SMOTE
 
 tqdm.pandas()
+
+if not os.path.exists("./models"):
+    os.makedirs("./models")
+
 
 def clean_text(texts):
     clean_texts = []
@@ -27,68 +32,52 @@ def clean_text(texts):
     return clean_texts
 
 
-def main():
+def main(sample_size=0.1):
     data = pd.read_csv("dataset/Hotel_Reviews.csv")
     data["review"] = data["Negative_Review"] + data["Positive_Review"]
-
-    print("Sentiment Labeling")
+    print("Generating Labels...")
     data["is_bad_review"] = data["Reviewer_Score"].progress_apply(lambda x: 1 if x < 5 else 0)
     data = data[["review", "is_bad_review"]]
-    # data = data.sample(frac=0.5, replace=False, random_state=42)
-
-    print("Replacing No Negative/Positive")
+    data = data.sample(frac=sample_size, replace=False, random_state=42)
+    print("Replacing No Negative/Positive...")
     data["review"] = data["review"].progress_apply(lambda x: x.replace("No Negative", "").replace("No Positive", ""))
-
-    print("Text Preprocessing")
+    print("Preprocessing Text...")
     data.insert(len(data.columns), "review_clean", clean_text(data["review"]))
-
-    print("Vader Features")
+    print("Generating Sentiment Features...")
     data["sentiments"] = data["review"].progress_apply(SentimentIntensityAnalyzer().polarity_scores)
-
-    print("Turn Vader Features to Series")
     data = pd.concat([data.drop(["sentiments"], axis=1), data["sentiments"].progress_apply(pd.Series)], axis=1)
-
-    print("Number of Characters Features")
+    print("Generating NumCharacter Features...")
     data["nb_chars"] = data["review"].progress_apply(lambda x: len(x))
-
-    print("Number of Words Features")
+    print("Generating NumWords Features...")
     data["nb_words"] = data["review"].progress_apply(lambda x: len(x.split(" ")))
-
-    print("TaggedDocument for Doc2Vec")
-    documents = [
-        TaggedDocument(doc, [i])
-        for i, doc in enumerate(
-            data["review_clean"].progress_apply(lambda x: x.split(" "))
-        )
-    ]
-
+    print("Generating Tagged Document...")
+    documents = [TaggedDocument(doc, [i]) for i, doc in enumerate(data["review_clean"].progress_apply(lambda x: x.split(" ")))]
     model = Doc2Vec(documents, vector_size=5, window=2, min_count=1, workers=-1)
-    print("Doc2Vec Model Created")
-
-    print("Doc2Vec Features")
+    joblib.dump(model, "models/sentiment_model_doc2vec.sav")
+    print("Saved Doc2Vec Model.")
+    print("Generating Doc2Vec Features...")
     doc2vec_df = data["review_clean"].progress_apply(lambda x: model.infer_vector(x.split(" "))).apply(pd.Series)
     doc2vec_df.columns = ["doc2vec_vector_" + str(x) for x in doc2vec_df.columns]
     data = pd.concat([data, doc2vec_df], axis=1)
-
-    tfidf = TfidfVectorizer(max_df=0.9, min_df=0.1, max_features=500)
+    tfidf = TfidfVectorizer(max_df=10, max_features=500)
     tfidf_result = tfidf.fit_transform(data["review_clean"]).toarray()
-    tfidf_df = pd.DataFrame(
-        tfidf_result,
-        columns=tfidf.get_feature_names_out()
-    )
+    joblib.dump(tfidf, "models/sentiment_model_tfidf.sav")
+    print("Saved TFIDF Model.")
+    tfidf_df = pd.DataFrame(tfidf_result, columns=tfidf.get_feature_names_out())
     tfidf_df.columns = ["word_" + str(x) for x in tfidf_df.columns]
     tfidf_df.index = data.index
     data = pd.concat([data, tfidf_df], axis=1)
-    print("Tfidf Features Created")
-
     label = "is_bad_review"
     ignore_cols = [label, "review", "review_clean"]
     features = [c for c in data.columns if c not in ignore_cols]
-    x_train, x_test, y_train, y_test = train_test_split(data[features], data[label], test_size=0.20, random_state=42)
-    rf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-    rf.fit(x_train, y_train)
-    y_pred = rf.predict(x_test)
-    print(classification_report(y_test, y_pred))
+    x, y = SMOTE(sampling_strategy="minority", n_jobs=-1).fit_resample(data[features], data[label])
+    joblib.dump(x, "models/sentiment_features.sav")
+    joblib.dump(x, "models/sentiment_labels.sav")
+    print("Saved Features and Labels for Accuracy Testing.")
+    clf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+    clf.fit(x, y)
+    joblib.dump(clf, "models/sentiment_model_clf.sav")
+    print("Saved ML Model.")
 
 
 main()
