@@ -2,15 +2,14 @@ import joblib
 import spacy
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from flask import Flask, request, jsonify
+from flask_cors import CORS, cross_origin
 
 model_doc2vec = joblib.load("models/sentiment_model_doc2vec.sav")
 model_tfidf = joblib.load("models/sentiment_model_tfidf.sav")
 model_clf = joblib.load("models/sentiment_model_clf.sav")
 
-review_pos = "Great place to stay and many business near by."
-rating_pos = 10.0
-review_neg = "I won't go into details but basically employees at this hotel enforce policies in different ways. If one tells you something is okay to do, but the next person working disagrees....it will coat you the customer for there disorganization. When I asked if they expected me to check with every employee on how and which policies they enforced, they simply said yes. That is a burden no customer should bear and no customer should pay for employee disorganization."
-rating_neg = 1.0
+app = Flask(__name__)
 
 
 def clean_text_single(text):
@@ -30,7 +29,7 @@ def clean_text_single(text):
 
 def generate_features(review, rating):
     data_review = pd.DataFrame([[review, rating]], columns=["text", "rating"])
-    data_review["is_negative"] = data_review["rating"].apply(lambda x: 1 if x < 5 else 0)
+    data_review["is_negative"] = data_review["rating"].apply(lambda x: 1 if x < 2.5 else 0)
     data_review["text_clean"] = data_review["text"].apply(clean_text_single)
     data_review["sentiments"] = data_review["text"].apply(SentimentIntensityAnalyzer().polarity_scores)
     data_review = pd.concat([data_review.drop(["sentiments"], axis=1), data_review["sentiments"].apply(pd.Series)], axis=1)
@@ -50,12 +49,20 @@ def generate_features(review, rating):
     return data_review[features]
 
 
+@app.route("/rds_api", methods=["POST"])
+@cross_origin(origin="*", headers=["Content-Type", "Authorization"])
 def main():
-    features = generate_features(review_pos, rating_pos)
+    data = request.get_json()
+    review = data.get("description", "")
+    rating = data.get("userScore", "")
+    features = generate_features(review, rating)
     prediction = model_clf.predict(features)
     if prediction == 1:
-        print(False)
+        return jsonify({"result": False})
     else:
-        print(True)
+        return jsonify({"result": True})
+
+if __name__ == "__main__":
+    app.run(port=5000, debug=True)
 
 main()
