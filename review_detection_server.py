@@ -3,7 +3,7 @@ import spacy
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from flask import Flask, request, jsonify
-from flask_cors import CORS, cross_origin
+from flask_cors import cross_origin
 
 model_doc2vec = joblib.load("models/sentiment_model_doc2vec.sav")
 model_tfidf = joblib.load("models/sentiment_model_tfidf.sav")
@@ -49,7 +49,7 @@ def generate_features(review, rating):
     return data_review[features]
 
 
-@app.route("/rds_api", methods=["POST"])
+@app.route("/detection_server", methods=["POST"])
 @cross_origin(origin="*", headers=["Content-Type", "Authorization"])
 def main():
     data = request.get_json()
@@ -62,7 +62,6 @@ def main():
     else:
         return jsonify({"result": True})
 
+
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
-
-main()
