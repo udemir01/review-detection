@@ -58,9 +58,9 @@ def main():
     features = generate_features(review, rating)
     prediction = model_clf.predict(features)
     if prediction == 1:
-        return jsonify({"result": False})
-    else:
         return jsonify({"result": True})
+    else:
+        return jsonify({"result": False})
 
 
 if __name__ == "__main__":

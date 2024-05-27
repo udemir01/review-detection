@@ -1,5 +1,6 @@
 .venv/
 .env/
+.ipynb_checkpoints/
 
 models/
 dataset/Hotel_Reviews.csv
