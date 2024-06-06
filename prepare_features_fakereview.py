@@ -5,7 +5,8 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.decomposition import LatentDirichletAllocation as LDA
 
 tqdm.pandas()
 
@@ -46,7 +47,7 @@ def check_pos_tag(token):
 def clean_text(texts):
     clean_texts = []
     nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-    for tokens in nlp.pipe(tqdm(texts), n_process=10):
+    for tokens in nlp.pipe(tqdm(texts)):
         tokens = [
             token.lemma_.lower()
             for token in tokens
@@ -96,11 +97,34 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
         dtype=np.float32
     )
     tfidf_result = tfidf.fit_transform(data["text_clean"])
-    tfidf_df = pd.DataFrame(data=tfidf_result.toarray(), columns=tfidf.get_feature_names_out())
+    tfidf_df = pd.DataFrame(data=tfidf_result, columns=tfidf.get_feature_names_out())
     tfidf_df.columns = ["word_" + str(x) for x in tfidf_df.columns]
     tfidf_df.index = data.index
     data = pd.concat([data, tfidf_df], axis=1)
     return data, tfidf
+
+
+def remove_allzerorows(smatrix):
+    nonzero_row_indice, _ = smatrix.nonzero()
+    unique_nonzero_indice = np.unique(nonzero_row_indice)
+    return smatrix[unique_nonzero_indice]
+
+
+def feature_extract_lda(data):
+    print("Generating LDA features...")
+    cv = CountVectorizer(ngram_range=(1, 2))
+    corpus = cv.fit_transform(data["text_clean"])
+    corpus = remove_allzerorows(corpus)
+    lda_model = LDA(
+        n_components=100,
+        n_jobs=-1,
+        random_state=0
+    ).fit(corpus)
+    lda_output = lda_model.transform(corpus)
+    lda_df = pd.DataFrame(data=lda_output, columns=lda_model.get_feature_names_out())
+    lda_df.index = data.index
+    data = pd.concat([data, lda_df], axis=1)
+    return data, lda_model
 
 
 def remove_text_columns(data):
@@ -118,8 +142,10 @@ def main():
     data = feature_extract_vader_sentiment(data)
     data = feature_extract_num_char(data)
     data = feature_extract_num_words(data)
-    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=30000)
-    joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
+    data, lda_model = feature_extract_lda(data)
+    joblib.dump(lda_model, "models/fakereview_model_lda.sav")
+    # data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=30000)
+    # joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
     features, target = remove_text_columns(data)
     joblib.dump(features, "models/fakereview_features.sav")
     joblib.dump(target, "models/fakereview_target.sav")

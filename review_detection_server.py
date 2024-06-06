@@ -68,7 +68,7 @@ def main():
     features_fakereview = generate_features(review, rating, model_tfidf_fakereview)
     prediction_sentiment = model_clf_sentiment.predict(features_sentiment)
     prediction_fakereview = model_clf_fakereview.predict(features_fakereview)
-    if prediction_sentiment == 1:
+    if prediction_fakereview == 1:
         return jsonify({"result": False})
     else:
         return jsonify({"result": True})
