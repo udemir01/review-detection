@@ -1,15 +1,13 @@
 import os
 import joblib
-import torch
 import spacy
 import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import StandardScaler
-from transformers import BertTokenizer, BertModel
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.decomposition import LatentDirichletAllocation as LDA
 
 tqdm.pandas()
 
@@ -40,9 +38,8 @@ def check_pos_tag(token):
 
 def clean_text(texts):
     clean_texts = []
-    spacy.require_gpu()
-    nlp = spacy.load("en_core_web_sm")
-    for tokens in nlp.pipe(tqdm(texts)):
+    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+    for tokens in nlp.pipe(tqdm(texts), n_process=-1):
         tokens = [
             token.lemma_.lower()
             for token in tokens
@@ -117,29 +114,28 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
     return data, tfidf
 
 
-def extract_features(text, model, tokenizer, device):
-    input_ids = torch.tensor([tokenizer.encode(text, add_special_tokens=True)]).to(device)
-    with torch.no_grad():
-        outputs = model(input_ids)
-        hidden_states = outputs.hidden_states
-    token_vecs = torch.cat([hidden_states[i] for i in range(-4, 0)], dim=-1).squeeze(0)
-    features = torch.mean(token_vecs, dim=0)
-    return features.cpu().numpy()
+def remove_allzerorows(smatrix):
+    nonzero_row_indice, _ = smatrix.nonzero()
+    unique_nonzero_indice = np.unique(nonzero_row_indice)
+    return smatrix[unique_nonzero_indice]
 
 
-def feature_extract_bert(data):
-    print("Generating BERT Features...")
-    model = BertModel.from_pretrained("FacebookAI/roberta-base", output_hidden_states=True)
-    tokenizer = BertTokenizer.from_pretrained("bert-base-FacebookAI/roberta-base")
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    model.to(device)
-    features = []
-    for i in range(len(data)):
-        features.append(extract_features(data.iloc[i]["text_clean"], model, tokenizer, device))
-    df_features = pd.DataFrame(features, index=data.index)
-    df_features.columns = ["bert_value" + str(x) for x in df_features.columns]
-    data = pd.concat([data, df_features], axis=1)
-    return data
+def feature_extract_lda(data, num_topics=10):
+    print("Generating LDA features...")
+    cv = CountVectorizer(min_df=2, max_df=0.95, ngram_range=(1, 2))
+    corpus = cv.fit_transform(data["text_clean"])
+    lda_model = LDA(
+        doc_topic_prior=0.1,
+        topic_word_prior=0.01,
+        n_components=num_topics,
+        n_jobs=-1,
+        random_state=0
+    ).fit(corpus)
+    lda_output = lda_model.transform(corpus)
+    lda_df = pd.DataFrame(data=lda_output, index=data.index, columns=[i for i in range(0, num_topics)])
+    lda_df.columns = ["topic_" + str(x) for x in lda_df.columns]
+    data = pd.concat([data, lda_df], axis=1)
+    return data, lda_model
 
 
 def remove_text_columns(data):
@@ -158,7 +154,8 @@ def main(sample_size=0.1):
     data = feature_extract_vader_sentiment(data)
     data = feature_extract_num_char(data)
     data = feature_extract_num_words(data)
-    data = feature_extract_bert(data)
+    data, lda_model = feature_extract_lda(data)
+    joblib.dump(lda_model, "models/sentiment_model_lda.sav")
     # data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=2500)
     # joblib.dump(tfidf, "models/sentiment_model_tfidf.sav")
     features, target = remove_text_columns(data)
@@ -169,4 +166,4 @@ def main(sample_size=0.1):
 
 
 if __name__ == "__main__":
-    main(sample_size=0.1)
+    main(sample_size=1)

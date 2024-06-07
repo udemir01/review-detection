@@ -1,6 +1,6 @@
 import joblib
 from sklearn.linear_model import LogisticRegression
-from imblearn.over_sampling import SMOTE
+from imblearn.over_sampling import SMOTE, ADASYN
 
 
 def main():
@@ -18,11 +18,11 @@ def main():
         random_state=0
     )
 
-    features_sentiment, target_sentiment = SMOTE().fit_resample(features_sentiment, target_sentiment)
+    features_sentiment, target_sentiment = ADASYN(random_state=0).fit_resample(features_sentiment, target_sentiment)
     clf.fit(features_sentiment, target_sentiment)
     joblib.dump(clf, "models/sentiment_model_clf.sav")
 
-    features_fakereview, target_fakereview = SMOTE().fit_resample(features_fakereview, target_fakereview)
+    features_fakereview, target_fakereview = ADASYN(random_state=0).fit_resample(features_fakereview, target_fakereview)
     clf.fit(features_fakereview, target_fakereview)
     joblib.dump(clf, "models/fakereview_model_clf.sav")
 

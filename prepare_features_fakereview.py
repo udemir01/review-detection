@@ -1,6 +1,5 @@
 import os
 import joblib
-import torch
 import spacy
 import pandas as pd
 import numpy as np
@@ -9,7 +8,6 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation as LDA
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
-from transformers import RobertaModel, RobertaTokenizer
 
 tqdm.pandas()
 
@@ -49,9 +47,8 @@ def check_pos_tag(token):
 
 def clean_text(texts):
     clean_texts = []
-    spacy.require_gpu()
     nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-    for tokens in nlp.pipe(tqdm(texts)):
+    for tokens in nlp.pipe(tqdm(texts), n_process=6):
         tokens = [
             token.lemma_.lower()
             for token in tokens
@@ -129,29 +126,6 @@ def feature_extract_doc2vec(data, vector_size=300):
     return data, model
 
 
-def extract_features(text, model, tokenizer, device):
-    input_ids = torch.tensor([tokenizer.encode(text, add_special_tokens=True)]).to(device)
-    with torch.no_grad():
-        outputs = model(input_ids)
-        hidden_states = outputs.hidden_states
-    token_vecs = torch.cat([hidden_states[i] for i in range(-4, 0)], dim=-1).squeeze(0)
-    features = torch.mean(token_vecs, dim=0)
-    return features.cpu().numpy()
-
-def feature_extract_bert(data):
-    print("Generating BERT Features...")
-    model = RobertaModel.from_pretrained("FacebookAI/roberta-base", output_hidden_states=True)
-    tokenizer = RobertaTokenizer.from_pretrained("FacebookAI/roberta-base")
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    model.to(device)
-    features = []
-    for i in range(len(data)):
-        features.append(extract_features(data.iloc[i]["text_clean"], model, tokenizer, device))
-    df_features = pd.DataFrame(features, index=data.index)
-    df_features.columns = ["bert_value" + str(x) for x in df_features.columns]
-    data = pd.concat([data, df_features], axis=1)
-    return data
-
 def remove_allzerorows(smatrix):
     nonzero_row_indice, _ = smatrix.nonzero()
     unique_nonzero_indice = np.unique(nonzero_row_indice)
@@ -195,9 +169,8 @@ def main():
     data = feature_extract_num_words(data)
     data, lda_model = feature_extract_lda(data)
     joblib.dump(lda_model, "models/fakereview_model_lda.sav")
-    data = feature_extract_bert(data)
-    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=1000)
-    joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
+    # data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=1000)
+    # joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
     features, target = remove_text_columns(data)
     joblib.dump(features, "models/fakereview_features.sav")
     joblib.dump(target, "models/fakereview_target.sav")
