@@ -1,5 +1,6 @@
 import os
 import joblib
+import torch
 import spacy
 import pandas as pd
 import numpy as np
@@ -7,6 +8,8 @@ from tqdm.auto import tqdm
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation as LDA
+from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+from transformers import RobertaModel, RobertaTokenizer
 
 tqdm.pandas()
 
@@ -46,6 +49,7 @@ def check_pos_tag(token):
 
 def clean_text(texts):
     clean_texts = []
+    spacy.require_gpu()
     nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
     for tokens in nlp.pipe(tqdm(texts)):
         tokens = [
@@ -97,12 +101,56 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
         dtype=np.float32
     )
     tfidf_result = tfidf.fit_transform(data["text_clean"])
-    tfidf_df = pd.DataFrame(data=tfidf_result, columns=tfidf.get_feature_names_out())
+    tfidf_df = pd.DataFrame(data=tfidf_result.toarray(), columns=tfidf.get_feature_names_out())
     tfidf_df.columns = ["word_" + str(x) for x in tfidf_df.columns]
     tfidf_df.index = data.index
     data = pd.concat([data, tfidf_df], axis=1)
     return data, tfidf
 
+
+def feature_extract_doc2vec(data, vector_size=300):
+    print("Generating Tagged Document...")
+    documents = [TaggedDocument(doc, [i]) for i, doc in enumerate(data["text_clean"].progress_apply(lambda x: x.split(" ")))]
+    model = Doc2Vec(
+        documents=documents,
+        dm_mean=1,
+        min_count=1,
+        window=10,
+        alpha=0.065,
+        min_alpha=0.065,
+        vector_size=vector_size,
+        workers=-1
+    )
+    print("Generating Doc2Vec Features...")
+    doc2vec_df = data["text_clean"].progress_apply(lambda x: model.infer_vector(x.split(" "))).apply(pd.Series)
+    doc2vec_df.columns = ["doc2vec_vector_" + str(x) for x in doc2vec_df.columns]
+    doc2vec_df.index = data.index
+    data = pd.concat([data, doc2vec_df], axis=1)
+    return data, model
+
+
+def extract_features(text, model, tokenizer, device):
+    input_ids = torch.tensor([tokenizer.encode(text, add_special_tokens=True)]).to(device)
+    with torch.no_grad():
+        outputs = model(input_ids)
+        hidden_states = outputs.hidden_states
+    token_vecs = torch.cat([hidden_states[i] for i in range(-4, 0)], dim=-1).squeeze(0)
+    features = torch.mean(token_vecs, dim=0)
+    return features.cpu().numpy()
+
+def feature_extract_bert(data):
+    print("Generating BERT Features...")
+    model = RobertaModel.from_pretrained("FacebookAI/roberta-base", output_hidden_states=True)
+    tokenizer = RobertaTokenizer.from_pretrained("FacebookAI/roberta-base")
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    model.to(device)
+    features = []
+    for i in range(len(data)):
+        features.append(extract_features(data.iloc[i]["text_clean"], model, tokenizer, device))
+    df_features = pd.DataFrame(features, index=data.index)
+    df_features.columns = ["bert_value" + str(x) for x in df_features.columns]
+    data = pd.concat([data, df_features], axis=1)
+    return data
 
 def remove_allzerorows(smatrix):
     nonzero_row_indice, _ = smatrix.nonzero()
@@ -112,16 +160,19 @@ def remove_allzerorows(smatrix):
 
 def feature_extract_lda(data):
     print("Generating LDA features...")
-    cv = CountVectorizer(ngram_range=(1, 2))
+    cv = CountVectorizer(min_df=2, max_df=0.95, ngram_range=(1, 2))
     corpus = cv.fit_transform(data["text_clean"])
     corpus = remove_allzerorows(corpus)
     lda_model = LDA(
-        n_components=100,
+        doc_topic_prior=0.1,
+        topic_word_prior=0.01,
+        n_components=10,
         n_jobs=-1,
         random_state=0
     ).fit(corpus)
     lda_output = lda_model.transform(corpus)
     lda_df = pd.DataFrame(data=lda_output, columns=lda_model.get_feature_names_out())
+    lda_df.columns = ["topic_" + str(x) for x in lda_df.columns]
     lda_df.index = data.index
     data = pd.concat([data, lda_df], axis=1)
     return data, lda_model
@@ -144,8 +195,9 @@ def main():
     data = feature_extract_num_words(data)
     data, lda_model = feature_extract_lda(data)
     joblib.dump(lda_model, "models/fakereview_model_lda.sav")
-    # data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=30000)
-    # joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
+    data = feature_extract_bert(data)
+    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=1000)
+    joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
     features, target = remove_text_columns(data)
     joblib.dump(features, "models/fakereview_features.sav")
     joblib.dump(target, "models/fakereview_target.sav")

@@ -11,17 +11,8 @@ def main():
     features_fakereview = joblib.load("models/fakereview_features.sav")
     target_fakereview = joblib.load("models/fakereview_target.sav")
 
-    # clf = LogisticRegression(
-    #     solver="liblinear",
-    #     class_weight={
-    #         0: 0.50,
-    #         1: 0.50
-    #     },
-    #     random_state=0
-    # )
-
-    clf = SGDClassifier(
-        loss="modified_huber",
+    clf = LogisticRegression(
+        solver="liblinear",
         class_weight={
             0: 0.50,
             1: 0.50
@@ -37,7 +28,7 @@ def main():
     # print(classification_report(y_test, y_pred))
     # print(confusion_matrix(y_test, y_pred))
 
-    x_train, x_test, y_train, y_test = train_test_split(features_fakereview, target_fakereview, test_size=0.2)
+    x_train, x_test, y_train, y_test = train_test_split(features_fakereview, target_fakereview, test_size=0.2, random_state=0)
     x_train, y_train = SMOTE().fit_resample(x_train, y_train)
     clf.fit(x_train, y_train)
     y_pred = clf.predict(x_test)
