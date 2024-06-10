@@ -17,18 +17,25 @@ if not os.path.exists("./models"):
 
 def read_file(filename: str) -> pd.DataFrame:
     data = pd.DataFrame()
-    if filename == "dataset/textdata.txt":
+    if filename == "dataset/yelpCHI_text.txt":
         with open(filename, "r") as f:
             data = f.readlines()
             data = pd.DataFrame(data, columns=["text"])
-    elif filename == "dataset/metadata.txt":
-        data = pd.read_csv(filename, header=None, sep=" ", names=["date", "rid", "uid", "pid", "label", "o1", "o2", "o3", "rating"])
+    elif filename == "dataset/yelpCHI_meta.txt":
+        data = pd.read_csv(filename, header=None, sep=' ', names=["date", "rid", "uid", "pid", "label", "o1", "o2", "o3", "rating"])
+        data = data[["label"]]
+    elif filename == "dataset/yelpNYC_text.txt":
+        data = pd.read_csv(filename, header=None, sep='\t', names=["uid", "pid", "date", "text"])
+        data = data[["text"]]
+    elif filename == "dataset/yelpNYC_meta.txt":
+        data = pd.read_csv(filename, header=None, sep='\t', names=["uid", "pid", "rating", "label", "date"])
+        data = data[["label"]]
     return data
 
 
 def generate_labels(data: pd.DataFrame, metadata: pd.DataFrame) -> pd.DataFrame:
     print("Generating Labels...")
-    data["is_fake"] = metadata["label"].progress_apply(lambda x: 1 if x == "Y" else 0)
+    data["is_fake"] = metadata["label"].progress_apply(lambda x: 1 if x == "Y" or x == -1 else 0)
     return data
 
 
@@ -65,7 +72,6 @@ def clean_text(texts):
 def preprocess_data(data: pd.DataFrame) -> pd.DataFrame:
     print("Preprocessing Text...")
     data.insert(len(data.columns), "text_clean", clean_text(data["text"]))
-    data["text_clean_tokens"] = data["text_clean"].progress_apply(lambda x: x.split(" "))
     return data
 
 
@@ -126,51 +132,49 @@ def feature_extract_doc2vec(data, vector_size=300):
     return data, model
 
 
-def remove_allzerorows(smatrix):
-    nonzero_row_indice, _ = smatrix.nonzero()
-    unique_nonzero_indice = np.unique(nonzero_row_indice)
-    return smatrix[unique_nonzero_indice]
-
-
-def feature_extract_lda(data):
+def feature_extract_lda(data, num_topics):
     print("Generating LDA features...")
-    cv = CountVectorizer(min_df=2, max_df=0.95, ngram_range=(1, 2))
+    cv = CountVectorizer(ngram_range=(1, 2))
     corpus = cv.fit_transform(data["text_clean"])
-    corpus = remove_allzerorows(corpus)
     lda_model = LDA(
+        n_components=num_topics,
         doc_topic_prior=0.1,
         topic_word_prior=0.01,
-        n_components=10,
-        n_jobs=-1,
+        max_iter=1000,
+        learning_method="online",
+        n_jobs=6,
         random_state=0
-    ).fit(corpus)
-    lda_output = lda_model.transform(corpus)
-    lda_df = pd.DataFrame(data=lda_output, columns=lda_model.get_feature_names_out())
+    )
+    lda_output = lda_model.fit_transform(corpus)
+    lda_df = pd.DataFrame(
+        data=lda_output,
+        index=data.index,
+        columns=[i for i in range(0, lda_model.n_components)]
+    )
     lda_df.columns = ["topic_" + str(x) for x in lda_df.columns]
-    lda_df.index = data.index
     data = pd.concat([data, lda_df], axis=1)
-    return data, lda_model
+    return data, lda_model, cv
 
 
 def remove_text_columns(data):
     label = "is_fake"
-    ignore_cols = [label, "text", "text_clean", "text_clean_tokens"]
+    ignore_cols = [label, "text", "text_clean"]
     features = [c for c in data.columns if c not in ignore_cols]
     return data[features], data[label]
 
 
 def main():
-    data = read_file("dataset/textdata.txt")
-    metadata = read_file("dataset/metadata.txt")
+    metadata = read_file("dataset/yelpCHI_meta.txt")
+    data = read_file("dataset/yelpCHI_text.txt")
     data = generate_labels(data, metadata)
     data = preprocess_data(data)
-    data = feature_extract_vader_sentiment(data)
-    data = feature_extract_num_char(data)
-    data = feature_extract_num_words(data)
-    data, lda_model = feature_extract_lda(data)
-    joblib.dump(lda_model, "models/fakereview_model_lda.sav")
-    # data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=1000)
+    # data, doc2vec_model = feature_extract_doc2vec(data, vector_size=1000)
+    # joblib.dump(doc2vec_model, "models/fakereview_model_doc2vec.sav")
+    # data, tfidf = feature_extract_tfidf(data, min_df=10, max_df=0.95, max_features=10000)
     # joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
+    data, lda_model, cv = feature_extract_lda(data, 15)
+    joblib.dump(lda_model, "models/fakereview_model_lda.sav")
+    joblib.dump(cv, "models/fakereview_model_cv.sav")
     features, target = remove_text_columns(data)
     joblib.dump(features, "models/fakereview_features.sav")
     joblib.dump(target, "models/fakereview_target.sav")

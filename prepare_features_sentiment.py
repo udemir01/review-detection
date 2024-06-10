@@ -90,7 +90,6 @@ def feature_extract_doc2vec(data, vector_size=200):
     model = Doc2Vec(documents, vector_size=vector_size, workers=-1)
     print("Generating Doc2Vec Features...")
     doc2vec_df = data["text_clean"].progress_apply(lambda x: model.infer_vector(x.split(" "))).apply(pd.Series)
-    doc2vec_df = pd.DataFrame(StandardScaler().fit_transform(doc2vec_df))
     doc2vec_df.columns = ["doc2vec_vector_" + str(x) for x in doc2vec_df.columns]
     doc2vec_df.index = data.index
     data = pd.concat([data, doc2vec_df], axis=1)
@@ -114,15 +113,9 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
     return data, tfidf
 
 
-def remove_allzerorows(smatrix):
-    nonzero_row_indice, _ = smatrix.nonzero()
-    unique_nonzero_indice = np.unique(nonzero_row_indice)
-    return smatrix[unique_nonzero_indice]
-
-
 def feature_extract_lda(data, num_topics=10):
     print("Generating LDA features...")
-    cv = CountVectorizer(min_df=2, max_df=0.95, ngram_range=(1, 2))
+    cv = CountVectorizer(ngram_range=(1, 3))
     corpus = cv.fit_transform(data["text_clean"])
     lda_model = LDA(
         doc_topic_prior=0.1,
@@ -132,10 +125,10 @@ def feature_extract_lda(data, num_topics=10):
         random_state=0
     ).fit(corpus)
     lda_output = lda_model.transform(corpus)
-    lda_df = pd.DataFrame(data=lda_output, index=data.index, columns=[i for i in range(0, num_topics)])
+    lda_df = pd.DataFrame(data=lda_output, index=data.index, columns=[i for i in range(0, lda_model.n_components)])
     lda_df.columns = ["topic_" + str(x) for x in lda_df.columns]
     data = pd.concat([data, lda_df], axis=1)
-    return data, lda_model
+    return data, lda_model, cv
 
 
 def remove_text_columns(data):
@@ -154,10 +147,13 @@ def main(sample_size=0.1):
     data = feature_extract_vader_sentiment(data)
     data = feature_extract_num_char(data)
     data = feature_extract_num_words(data)
-    data, lda_model = feature_extract_lda(data)
+    data, lda_model, cv = feature_extract_lda(data)
     joblib.dump(lda_model, "models/sentiment_model_lda.sav")
-    # data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.5, max_features=2500)
-    # joblib.dump(tfidf, "models/sentiment_model_tfidf.sav")
+    joblib.dump(cv, "models/sentiment_model_cv.sav")
+    data, doc2vec_model = feature_extract_doc2vec(data, vector_size=1000)
+    joblib.dump(doc2vec_model, "models/sentiment_model_tfidf.sav")
+    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.95, max_features=2000)
+    joblib.dump(tfidf, "models/sentiment_model_tfidf.sav")
     features, target = remove_text_columns(data)
     joblib.dump(features, "models/sentiment_features.sav")
     joblib.dump(target, "models/sentiment_target.sav")
@@ -166,4 +162,4 @@ def main(sample_size=0.1):
 
 
 if __name__ == "__main__":
-    main(sample_size=1)
+    main(sample_size=0.1)
