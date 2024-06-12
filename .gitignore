@@ -4,6 +4,7 @@
 
 models/
 dataset/Hotel_Reviews.csv
+dataset/*
 
 package-lock.json
 package.json

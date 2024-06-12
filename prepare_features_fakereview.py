@@ -7,9 +7,12 @@ from tqdm.auto import tqdm
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation as LDA
+from sklearn.preprocessing import StandardScaler
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+from textblob import TextBlob
 
 tqdm.pandas()
+nlp = spacy.load("en_core_web_sm")
 
 if not os.path.exists("./models"):
     os.makedirs("./models")
@@ -17,18 +20,12 @@ if not os.path.exists("./models"):
 
 def read_file(filename: str) -> pd.DataFrame:
     data = pd.DataFrame()
-    if filename == "dataset/yelpCHI_text.txt":
+    if filename == "dataset/yelpCHI_hotel_text.txt" or filename == "dataset/yelpCHI_restaurant_text.txt":
         with open(filename, "r") as f:
             data = f.readlines()
-            data = pd.DataFrame(data, columns=["text"])
-    elif filename == "dataset/yelpCHI_meta.txt":
+            data = pd.DataFrame(data, columns=["text"]).apply(pd.Series)
+    elif filename == "dataset/yelpCHI_hotel_meta.txt" or filename == "dataset/yelpCHI_restaurant_meta.txt":
         data = pd.read_csv(filename, header=None, sep=' ', names=["date", "rid", "uid", "pid", "label", "o1", "o2", "o3", "rating"])
-        data = data[["label"]]
-    elif filename == "dataset/yelpNYC_text.txt":
-        data = pd.read_csv(filename, header=None, sep='\t', names=["uid", "pid", "date", "text"])
-        data = data[["text"]]
-    elif filename == "dataset/yelpNYC_meta.txt":
-        data = pd.read_csv(filename, header=None, sep='\t', names=["uid", "pid", "rating", "label", "date"])
         data = data[["label"]]
     return data
 
@@ -54,8 +51,7 @@ def check_pos_tag(token):
 
 def clean_text(texts):
     clean_texts = []
-    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-    for tokens in nlp.pipe(tqdm(texts), n_process=6):
+    for tokens in nlp.pipe(tqdm(texts), n_process=-1):
         tokens = [
             token.lemma_.lower()
             for token in tokens
@@ -79,6 +75,10 @@ def feature_extract_vader_sentiment(data):
     print("Generating Sentiment Features...")
     data["sentiments"] = data["text"].progress_apply(SentimentIntensityAnalyzer().polarity_scores)
     data = pd.concat([data.drop(["sentiments"], axis=1), data["sentiments"].progress_apply(pd.Series)], axis=1)
+    data["subjectivity"] = data["text"].progress_apply(
+        lambda x:
+            TextBlob(x).sentiment.subjectivity
+    )
     return data
 
 
@@ -104,7 +104,11 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
         dtype=np.float32
     )
     tfidf_result = tfidf.fit_transform(data["text_clean"])
-    tfidf_df = pd.DataFrame(data=tfidf_result.toarray(), columns=tfidf.get_feature_names_out())
+    tfidf_result = StandardScaler(with_mean=False).fit_transform(tfidf_result)
+    tfidf_df = pd.DataFrame(
+        data=tfidf_result.toarray(),
+        columns=tfidf.get_feature_names_out()
+    )
     tfidf_df.columns = ["word_" + str(x) for x in tfidf_df.columns]
     tfidf_df.index = data.index
     data = pd.concat([data, tfidf_df], axis=1)
@@ -113,19 +117,24 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
 
 def feature_extract_doc2vec(data, vector_size=300):
     print("Generating Tagged Document...")
-    documents = [TaggedDocument(doc, [i]) for i, doc in enumerate(data["text_clean"].progress_apply(lambda x: x.split(" ")))]
+    documents = [
+        TaggedDocument(doc, [i])
+        for i, doc in enumerate(
+            data["text_clean"].progress_apply(lambda x: x.split(" "))
+        )
+    ]
     model = Doc2Vec(
         documents=documents,
-        dm_mean=1,
-        min_count=1,
-        window=10,
-        alpha=0.065,
-        min_alpha=0.065,
         vector_size=vector_size,
+        dm_mean=1,
         workers=-1
     )
     print("Generating Doc2Vec Features...")
-    doc2vec_df = data["text_clean"].progress_apply(lambda x: model.infer_vector(x.split(" "))).apply(pd.Series)
+    doc2vec_df = data["text_clean"].progress_apply(
+        lambda x:
+            model.infer_vector(x.split(" "))
+    ).apply(pd.Series)
+    doc2vec_df = pd.DataFrame(StandardScaler().fit_transform(doc2vec_df))
     doc2vec_df.columns = ["doc2vec_vector_" + str(x) for x in doc2vec_df.columns]
     doc2vec_df.index = data.index
     data = pd.concat([data, doc2vec_df], axis=1)
@@ -134,18 +143,30 @@ def feature_extract_doc2vec(data, vector_size=300):
 
 def feature_extract_lda(data, num_topics):
     print("Generating LDA features...")
-    cv = CountVectorizer(ngram_range=(1, 2))
+    cv = TfidfVectorizer(
+        min_df=2,
+        max_df=0.95,
+        max_features=2500,
+        ngram_range=(1, 2),
+    )
     corpus = cv.fit_transform(data["text_clean"])
+    print("Corpus shape: ", corpus.shape)
     lda_model = LDA(
         n_components=num_topics,
+        learning_method="online",
         doc_topic_prior=0.1,
         topic_word_prior=0.01,
-        max_iter=1000,
-        learning_method="online",
-        n_jobs=6,
+        max_doc_update_iter=1000,
+        total_samples=corpus.shape[0],
+        batch_size=int(corpus.shape[0] / 250),
+        n_jobs=-1,
         random_state=0
     )
-    lda_output = lda_model.fit_transform(corpus)
+    lda_model = lda_model.partial_fit(corpus)
+    print("LDA Score: ", lda_model.score(corpus))
+    print("LDA Perplexity: ", lda_model.perplexity(corpus))
+    lda_output = lda_model.transform(corpus)
+    lda_output = StandardScaler().fit_transform(lda_output)
     lda_df = pd.DataFrame(
         data=lda_output,
         index=data.index,
@@ -164,15 +185,22 @@ def remove_text_columns(data):
 
 
 def main():
-    metadata = read_file("dataset/yelpCHI_meta.txt")
-    data = read_file("dataset/yelpCHI_text.txt")
+    hotel_metadata = read_file("dataset/yelpCHI_hotel_meta.txt")
+    hotel_data = read_file("dataset/yelpCHI_hotel_text.txt")
+    restaurant_metadata = read_file("dataset/yelpCHI_restaurant_meta.txt")
+    restaurant_data = read_file("dataset/yelpCHI_restaurant_text.txt")
+    data = pd.concat([hotel_data, restaurant_data], axis=0)
+    metadata = pd.concat([hotel_metadata, restaurant_metadata], axis=0)
     data = generate_labels(data, metadata)
     data = preprocess_data(data)
+    data = feature_extract_num_char(data)
+    data = feature_extract_num_words(data)
+    data = feature_extract_vader_sentiment(data)
     # data, doc2vec_model = feature_extract_doc2vec(data, vector_size=1000)
     # joblib.dump(doc2vec_model, "models/fakereview_model_doc2vec.sav")
-    # data, tfidf = feature_extract_tfidf(data, min_df=10, max_df=0.95, max_features=10000)
-    # joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
-    data, lda_model, cv = feature_extract_lda(data, 15)
+    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.95, max_features=2500)
+    joblib.dump(tfidf, "models/fakereview_model_tfidf.sav")
+    data, lda_model, cv = feature_extract_lda(data, num_topics=15)
     joblib.dump(lda_model, "models/fakereview_model_lda.sav")
     joblib.dump(cv, "models/fakereview_model_cv.sav")
     features, target = remove_text_columns(data)

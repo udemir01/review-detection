@@ -2,9 +2,11 @@ import joblib
 import spacy
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from sklearn.preprocessing import StandardScaler
 from flask import Flask, request, jsonify
 from flask_cors import cross_origin
 import time
+from textblob import TextBlob
 
 model_clf_sentiment = joblib.load("models/sentiment_model_clf.sav")
 model_clf_fakereview = joblib.load("models/fakereview_model_clf.sav")
@@ -12,11 +14,11 @@ model_lda_sentiment = joblib.load("models/sentiment_model_lda.sav")
 model_lda_fakereview = joblib.load("models/fakereview_model_lda.sav")
 model_cv_sentiment = joblib.load("models/sentiment_model_cv.sav")
 model_cv_fakereview = joblib.load("models/fakereview_model_cv.sav")
-model_doc2vec_sentiment = joblib.load("models/sentiment_model_doc2vec.sav")
-model_doc2vec_fakereview = joblib.load("models/fakereview_model_doc2vec.sav")
+# model_doc2vec_sentiment = joblib.load("models/sentiment_model_doc2vec.sav")
+# model_doc2vec_fakereview = joblib.load("models/fakereview_model_doc2vec.sav")
 model_tfidf_sentiment = joblib.load("models/sentiment_model_tfidf.sav")
 model_tfidf_fakereview = joblib.load("models/fakereview_model_tfidf.sav")
-nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+nlp = spacy.load("en_core_web_sm")
 
 app = Flask(__name__)
 
@@ -58,6 +60,13 @@ def extract_vader(data):
     data = pd.concat([data.drop(["sentiments"], axis=1), data["sentiments"].apply(pd.Series)], axis=1)
     return data
 
+def extract_blob(data):
+    data["subjectivity"] = data["text"].apply(
+        lambda x:
+            TextBlob(x).sentiment.subjectivity
+    )
+    return data
+
 
 def extract_num_char(data):
     data["nb_chars"] = data["text"].apply(lambda x: len(x))
@@ -93,30 +102,37 @@ def remove_columns_return_features(data):
 
 def extract_tfidf(data, tfidf):
     tfidf_result = tfidf.transform(data["text_clean"])
-    tfidf_df = pd.DataFrame(data=tfidf_result.toarray(), columns=tfidf.get_feature_names_out())
+    tfidf_result = StandardScaler(with_mean=False).fit_transform(tfidf_result)
+    tfidf_df = pd.DataFrame(
+        data=tfidf_result.toarray(),
+        columns=tfidf.get_feature_names_out()
+    )
     tfidf_df.columns = ["word_" + str(x) for x in tfidf_df.columns]
     tfidf_df.index = data.index
     data = pd.concat([data, tfidf_df], axis=1)
     return data
 
 
-def generate_features_sentiment(review, rating, lda_model, cv):
+def generate_features_sentiment(review, rating, tfidf, lda_model, cv):
     data = pd.DataFrame([[review, rating]], columns=["text", "rating"])
     data = preprocess_text(data)
     data = extract_vader(data)
-    data = extract_num_char(data)
-    data = extract_num_words(data)
+    # data = extract_num_char(data)
+    # data = extract_num_words(data)
     data = extract_lda(data, lda_model, cv)
+    data = extract_tfidf(data, tfidf)
     features = remove_columns_return_features(data)
     return features
 
 
-def generate_features_fakereview(review, rating, doc2vec_model, lda_model, tfidf, cv):
+def generate_features_fakereview(review, rating, tfidf, lda_model, cv):
     data = pd.DataFrame([[review, rating]], columns=["text", "rating"])
     data = preprocess_text(data)
     data = extract_num_char(data)
     data = extract_num_words(data)
-    data = extract_doc2vec(data, doc2vec_model)
+    data = extract_vader(data)
+    data = extract_blob(data)
+    # data = extract_doc2vec(data, doc2vec_model)
     data = extract_tfidf(data, tfidf)
     data = extract_lda(data, lda_model, cv)
     features = remove_columns_return_features(data)
@@ -134,15 +150,15 @@ def main():
     features_sentiment = generate_features_sentiment(
         review,
         rating,
+        model_tfidf_sentiment,
         model_lda_sentiment,
         model_cv_sentiment
     )
     features_fakereview = generate_features_fakereview(
         review,
         rating,
-        model_doc2vec_fakereview,
-        model_lda_fakereview,
         model_tfidf_fakereview,
+        model_lda_fakereview,
         model_cv_fakereview
     )
     end = time.time()

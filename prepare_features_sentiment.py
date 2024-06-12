@@ -8,8 +8,10 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation as LDA
+from sklearn.preprocessing import StandardScaler
 
 tqdm.pandas()
+nlp = spacy.load("en_core_web_sm")
 
 if not os.path.exists("./models"):
     os.makedirs("./models")
@@ -38,7 +40,6 @@ def check_pos_tag(token):
 
 def clean_text(texts):
     clean_texts = []
-    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
     for tokens in nlp.pipe(tqdm(texts), n_process=-1):
         tokens = [
             token.lemma_.lower()
@@ -102,7 +103,7 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
         min_df=min_df,
         max_df=max_df,
         max_features=max_features,
-        ngram_range=(1, 3),
+        ngram_range=(1, 2),
         dtype=np.float32
     )
     tfidf_result = tfidf.fit_transform(data["text_clean"])
@@ -115,17 +116,34 @@ def feature_extract_tfidf(data, min_df=1, max_df=1.0, max_features=None):
 
 def feature_extract_lda(data, num_topics=10):
     print("Generating LDA features...")
-    cv = CountVectorizer(ngram_range=(1, 3))
+    cv = TfidfVectorizer(
+        min_df=2,
+        max_df=0.95,
+        max_features=2500,
+        ngram_range=(1, 2),
+    )
     corpus = cv.fit_transform(data["text_clean"])
+    print("Corpus shape: ", corpus.shape)
     lda_model = LDA(
+        n_components=num_topics,
+        learning_method="online",
         doc_topic_prior=0.1,
         topic_word_prior=0.01,
-        n_components=num_topics,
+        total_samples=corpus.shape[0],
+        batch_size=int(corpus.shape[0] / 250),
         n_jobs=-1,
         random_state=0
-    ).fit(corpus)
+    )
+    lda_model = lda_model.partial_fit(corpus)
+    print("LDA Score: ", lda_model.score(corpus))
+    print("LDA Perplexity: ", lda_model.perplexity(corpus))
     lda_output = lda_model.transform(corpus)
-    lda_df = pd.DataFrame(data=lda_output, index=data.index, columns=[i for i in range(0, lda_model.n_components)])
+    lda_output = StandardScaler().fit_transform(lda_output)
+    lda_df = pd.DataFrame(
+        data=lda_output,
+        index=data.index,
+        columns=[i for i in range(0, lda_model.n_components)]
+    )
     lda_df.columns = ["topic_" + str(x) for x in lda_df.columns]
     data = pd.concat([data, lda_df], axis=1)
     return data, lda_model, cv
@@ -145,14 +163,14 @@ def main(sample_size=0.1):
     data = remove_no_neg_pos(data)
     data = preprocess_data(data)
     data = feature_extract_vader_sentiment(data)
-    data = feature_extract_num_char(data)
-    data = feature_extract_num_words(data)
-    data, lda_model, cv = feature_extract_lda(data)
+    # data = feature_extract_num_char(data)
+    # data = feature_extract_num_words(data)
+    data, lda_model, cv = feature_extract_lda(data, num_topics=15)
     joblib.dump(lda_model, "models/sentiment_model_lda.sav")
     joblib.dump(cv, "models/sentiment_model_cv.sav")
-    data, doc2vec_model = feature_extract_doc2vec(data, vector_size=1000)
-    joblib.dump(doc2vec_model, "models/sentiment_model_tfidf.sav")
-    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.95, max_features=2000)
+    # data, doc2vec_model = feature_extract_doc2vec(data, vector_size=1000)
+    # joblib.dump(doc2vec_model, "models/sentiment_model_tfidf.sav")
+    data, tfidf = feature_extract_tfidf(data, min_df=2, max_df=0.95, max_features=2500)
     joblib.dump(tfidf, "models/sentiment_model_tfidf.sav")
     features, target = remove_text_columns(data)
     joblib.dump(features, "models/sentiment_features.sav")
